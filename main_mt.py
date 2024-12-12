@@ -114,7 +114,7 @@ def main():
             normalizer_state = os.path.join(os.path.dirname(__file__), normalizer_state)
         normalizer.load_params(normalizer_state)
 
-        train_ds, val_ds, test_ds = get_multimodal_datasets(discretizer, normalizer, args, task)
+        train_ds, val_ds, test_ds = get_multimodal_datasets(discretizer, normalizer, args, task) # 得看下那个mask是个什么东西。
         mutli_train_dl.append(DataLoader(train_ds, args.batch_size, shuffle=True, collate_fn=my_collate, pin_memory=True, num_workers=num_workers, drop_last=True))
         mutli_val_dl.append(DataLoader(val_ds, args.batch_size, shuffle=True, collate_fn=my_collate, pin_memory=True, num_workers=num_workers, drop_last=False))
         mutli_test_dl.append(DataLoader(test_ds, args.batch_size, shuffle=True, collate_fn=my_collate, pin_memory=True, num_workers=num_workers, drop_last=False))
@@ -147,9 +147,9 @@ def main():
         model.train()
         train_loss = 0
 
-        task_list = list(range(len(mutli_train_dl)))
+        task_list = list(range(len(mutli_train_dl))) 
         print(multi_lr)
-        for t in range(len(mutli_train_dl)):
+        for t in range(len(mutli_train_dl)): # 他居然顺序的过dataloader
             task_now = args.task[t]
             print('Task:', task_now, ' Training!')
 
