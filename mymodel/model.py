@@ -48,7 +48,7 @@ class FlexCare(nn.Module):
         # Process time series data
         self.ehr_projection = nn.Linear(ehr_dim, hidden_dim)
         self.ehr_cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        self.ehr_pos_embed = nn.Parameter(torch.zeros(1, 600, hidden_dim))
+        self.ehr_pos_embed = nn.Parameter(torch.zeros(1, 600, hidden_dim)) # max_len
 
         # Process image data
         self.patch_projection = PatchEmbed(patch_size=16, embed_dim=hidden_dim)
@@ -89,30 +89,30 @@ class FlexCare(nn.Module):
         self.dense_layer_drg = nn.Linear(hidden_dim, 769)
 
     def forward(self, ehr, ehr_lengths, use_ehr, img, use_img, note, use_note, task_index):
-        task_embed = self.task_embedding(task_index).unsqueeze(1)
+        task_embed = self.task_embedding(task_index).unsqueeze(1) # B,D
 
         # Time series
-        ehr_embed = self.ehr_projection(ehr)
-        ehr_cls_tokens = self.ehr_cls_token.repeat(ehr_embed.shape[0], 1, 1)
-        ehr_embed = ehr_embed + self.ehr_pos_embed[:, :ehr_embed.shape[1], :]
-        ehr_embed = torch.cat((ehr_cls_tokens, ehr_embed), dim=1)
+        ehr_embed = self.ehr_projection(ehr) # B,T,D
+        ehr_cls_tokens = self.ehr_cls_token.repeat(ehr_embed.shape[0], 1, 1) # B,1,D
+        ehr_embed = ehr_embed + self.ehr_pos_embed[:, :ehr_embed.shape[1], :] # B,T,D
+        ehr_embed = torch.cat((ehr_cls_tokens, ehr_embed), dim=1) # B,T+1, D
 
         ehr_lengths = torch.tensor(ehr_lengths).to(self.device)
 
         if use_ehr.sum()!=0:
-            ehr_pad_mask = length_to_mask(ehr_lengths+use_ehr)
+            ehr_pad_mask = length_to_mask(ehr_lengths+use_ehr) # B,t+1. D, 这个use_ehr是什么东西
         else:
             ehr_pad_mask = length_to_mask(ehr_lengths+use_ehr, max_len=2)
 
         # Image
-        cxr_embed = self.patch_projection(img)
+        cxr_embed = self.patch_projection(img) # B，H,W->B, pd_num, D
         cxr_cls_tokens = self.cxr_cls_token.repeat(cxr_embed.shape[0], 1, 1)
         cxr_embed = cxr_embed + self.cxr_pos_embed[:, :cxr_embed.shape[1], :]
         cxr_embed = torch.cat((cxr_cls_tokens, cxr_embed), dim=1)
-        cxr_pad_mask = length_to_mask(use_img, max_len=1).repeat(1, cxr_embed.shape[1])
+        cxr_pad_mask = length_to_mask(use_img, max_len=1).repeat(1, cxr_embed.shape[1]) # B,pd
 
         # Text
-        with torch.no_grad():
+        with torch.no_grad(): # 放在这里面速度不是极慢？
             encoding = self.tokenizer(note, padding=True, truncation=True, max_length=512, add_special_tokens=False, return_tensors='pt')
             input_ids = encoding["input_ids"].to(self.device)
             attention_mask = encoding["attention_mask"].to(self.device)
@@ -133,35 +133,36 @@ class FlexCare(nn.Module):
             note_embed = note_cls_tokens
 
         if attention_mask.sum()!=0:
-            note_pad_mask = length_to_mask(attention_mask.sum(dim=1)+use_note)
+            note_pad_mask = length_to_mask(attention_mask.sum(dim=1)+use_note) # 这里的use似乎是0还是1，如果使用的话就是加上lenght
         else:
             note_pad_mask = length_to_mask(attention_mask.sum(dim=1)+use_note, max_len=1)
 
 
         # Multimodal fusion
-        multimodal_cls_tokens = self.mm_cls_token
+        multimodal_cls_tokens = self.mm_cls_token # 1,1,D
         for i in range(3):
-            multimodal_cls_tokens = torch.cat((multimodal_cls_tokens, self.cross_cls_tokens[i].unsqueeze(0)), dim=1)
-        multimodal_cls_tokens = multimodal_cls_tokens.repeat(ehr_embed.shape[0], 1, 1)
-        multimodal_embed = torch.cat((task_embed, multimodal_cls_tokens, ehr_embed, cxr_embed, note_embed), dim=1)
+            multimodal_cls_tokens = torch.cat((multimodal_cls_tokens, self.cross_cls_tokens[i].unsqueeze(0)), dim=1) # 1,4,D
+        multimodal_cls_tokens = multimodal_cls_tokens.repeat(ehr_embed.shape[0], 1, 1) # B,4,D
+        multimodal_embed = torch.cat((task_embed, multimodal_cls_tokens, ehr_embed, cxr_embed, note_embed), dim=1) # B,1+4+T+K+K, D
 
-        cls_pad_mask = length_to_mask(4*torch.ones(use_img.shape).to(self.device), max_len=4)
-        task_pad_mask = length_to_mask(torch.ones(use_img.shape).to(self.device), max_len=1)
-        multimodal_pad_mask = torch.cat((task_pad_mask, cls_pad_mask, ehr_pad_mask, cxr_pad_mask, note_pad_mask), dim=1)
+        cls_pad_mask = length_to_mask(4*torch.ones(use_img.shape).to(self.device), max_len=4) # B, 4
+        task_pad_mask = length_to_mask(torch.ones(use_img.shape).to(self.device), max_len=1) # B，1
+        multimodal_pad_mask = torch.cat((task_pad_mask, cls_pad_mask, ehr_pad_mask, cxr_pad_mask, note_pad_mask), dim=1) # 对应的mask矩阵，cls和task单独领出来。
 
         ehr_cls_index = 5
-        cxr_cls_index = ehr_cls_index + ehr_embed.shape[1]
+        cxr_cls_index = ehr_cls_index + ehr_embed.shape[1] # token对应的起始点
         note_cls_index = cxr_cls_index + cxr_embed.shape[1]
         # Mask that enables modality combination tokens to precisely target information relevant to diverse modality combination patterns
-        cross_cls_mask = generate_cross_modal_mask(ehr_cls_index, cxr_cls_index, note_cls_index, multimodal_embed.shape[1]).to(self.device)
+        cross_cls_mask = generate_cross_modal_mask(ehr_cls_index, cxr_cls_index, note_cls_index, multimodal_embed.shape[1]).to(self.device) # N*N
 
-        multimodal_embed = torch.transpose(multimodal_embed, 0, 1)
+        multimodal_embed = torch.transpose(multimodal_embed, 0, 1) # T,B,D, 这里咩有batch为False
         fusion_embed = self.transformer_fusion(multimodal_embed, mask=cross_cls_mask, src_key_padding_mask=multimodal_pad_mask)  #
         fusion_embed = torch.transpose(fusion_embed, 0, 1)
 
-        task_mm_embed = fusion_embed[:, 0]
+        task_mm_embed = fusion_embed[:, 0] # B,D, combination
+        # 都使用cls位置上的emb。B, T+ 1 +1+1, D, 还是依靠EHR多一点
         mm_embed = torch.cat((fusion_embed[:, 1:ehr_cls_index], fusion_embed[:, ehr_cls_index].unsqueeze(1), fusion_embed[:, cxr_cls_index].unsqueeze(1), fusion_embed[:, note_cls_index].unsqueeze(1)), dim=1)
-        # Mask that indicates which modality combination tokens are missing
+        # Mask that indicates which modality combination tokens are missing，有7种组合 。这里有点奇怪，得到这个东西
         mm_mask = torch.ones(mm_embed.shape[0], mm_embed.shape[1]).to(self.device)
         mm_mask[:, 0] = ehr_pad_mask[:, 0] | cxr_pad_mask[:, 0] | note_pad_mask[:, 0]
         mm_mask[:, 1] = ehr_pad_mask[:, 0] | cxr_pad_mask[:, 0]
@@ -171,23 +172,23 @@ class FlexCare(nn.Module):
         mm_mask[:, 5] = cxr_pad_mask[:, 0]
         mm_mask[:, 6] = note_pad_mask[:, 0]
 
-        mm_moe = torch.zeros(mm_embed.shape[0]*mm_embed.shape[1], mm_embed.shape[2]).to(self.device)
-        cat_task_mm = task_mm_embed.unsqueeze(1).repeat(1, 7, 1)
+        mm_moe = torch.zeros(mm_embed.shape[0]*mm_embed.shape[1], mm_embed.shape[2]).to(self.device)# B*XX, D
+        cat_task_mm = task_mm_embed.unsqueeze(1).repeat(1, 7, 1) # B,7,D 组合的
 
         tmp_moe, moe_loss = self.moe(cat_task_mm.reshape(-1, cat_task_mm.shape[2])[mm_mask.reshape(-1) == 0],     # ,moe_loss
-                           mm_embed.reshape(-1, mm_embed.shape[2])[mm_mask.reshape(-1) == 0])
+                           mm_embed.reshape(-1, mm_embed.shape[2])[mm_mask.reshape(-1) == 0]) # 感觉是组合的mask + 组合的expert的emb。
         mm_moe[mm_mask.reshape(-1) == 0] = tmp_moe
-        mm_moe = mm_moe.reshape(mm_embed.shape[0], mm_embed.shape[1], mm_embed.shape[2])
+        mm_moe = mm_moe.reshape(mm_embed.shape[0], mm_embed.shape[1], mm_embed.shape[2]) # B，T+1+1+1, D
 
-        cat_task_mm = torch.cat((task_mm_embed.unsqueeze(1).repeat(1, 7, 1), mm_moe), 2)
-        weight = temperature_scaled_softmax(self.mm_choose2(torch.tanh(self.mm_choose(cat_task_mm))).squeeze(2) + (-mm_mask * 1e7), temperature=0.2, dim=1)
+        cat_task_mm = torch.cat((task_mm_embed.unsqueeze(1).repeat(1, 7, 1), mm_moe), 2) # 这个最后才出现，B, all+ 7, D
+        weight = temperature_scaled_softmax(self.mm_choose2(torch.tanh(self.mm_choose(cat_task_mm))).squeeze(2) + (-mm_mask * 1e7), temperature=0.2, dim=1) # route选择expert
 
         weighted_mm = (mm_moe * weight.unsqueeze(2).repeat(1, 1, mm_moe.shape[-1])).sum(dim=1)
 
-        final_mm_embed = torch.cat((task_mm_embed, self.mm_layernorm(weighted_mm)),1)
+        final_mm_embed = torch.cat((task_mm_embed, self.mm_layernorm(weighted_mm)),1) # 还把task加上了。
 
 
-        if task_index[0] == 0:
+        if task_index[0] == 0: # 一个个batch送进去的，应该是依靠之前task emb也送入route选择导致的梯度共享。
             out = self.dense_layer_mortality(final_mm_embed)
             scores = torch.sigmoid(out)
         elif task_index[0] == 1:
@@ -209,7 +210,7 @@ class FlexCare(nn.Module):
             out = self.dense_layer_ph(final_mm_embed)
             scores = torch.sigmoid(out)
 
-        ortho_loss = calculate_ortho_loss(mm_embed)
+        ortho_loss = calculate_ortho_loss(mm_embed) # 隔离开。
 
         if self.training is True:
             return scores, ortho_loss, moe_loss
