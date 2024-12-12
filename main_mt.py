@@ -51,7 +51,7 @@ def my_collate(batch):
     # Time series data  (When missing, use an all-zero vector with shape of [1,76])
     ehr = [item[0][-512:] if np.array_equal(item[0], None) is False else np.zeros((1,76)) for item in batch]
     ehr, ehr_length = pad_zeros(ehr)
-    mask_ehr = np.array([1 if np.array_equal(item[0], None) is False else 0 for item in batch])     # Marks whether EHR is included
+    mask_ehr = np.array([1 if np.array_equal(item[0], None) is False else 0 for item in batch])     # Marks whether EHR is included， 这里有点意思，应该是一个batch等长的mask向量
     ehr_length = [0 if mask_ehr[i] == 0 else ehr_length[i] for i in range(len(ehr_length))]  # Remove fictitious time series
     
     # CXR image data    (When missing, use an all-zero vector with shape of [3,224,224])
