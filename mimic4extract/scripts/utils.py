@@ -49,20 +49,20 @@ def merge_multimodal_data(args, task):
         (ehr_cxr_merged.StudyDateTime >= ehr_cxr_merged.intime) & ((ehr_cxr_merged.StudyDateTime <= end_time))]
 
     # Select CXR of the AP type
-    ehr_cxr_merged_AP = ehr_cxr_merged_during[ehr_cxr_merged_during['ViewPosition'] == 'AP']
+    ehr_cxr_merged_AP = ehr_cxr_merged_during[ehr_cxr_merged_during['ViewPosition'] == 'AP'] # 只选AP type的
 
     # Select the last CXR of the sample
     ehr_cxr_merged_sorted = ehr_cxr_merged_AP.sort_values(by=['time_series', 'period_length', 'StudyDateTime'],
-                                                          ascending=[True, True, True])
+                                                          ascending=[True, True, True]) # 我去，只选最后符合要求的那个。奥，他这里因为不同modality看作单独的特征。
     ehr_cxr_merged_final = ehr_cxr_merged_sorted.drop_duplicates(subset=['time_series', 'period_length'], keep='last')
 
     # Merged with the original EHR to obtain the full dataset of partially CXR-free modality
     all_merged = ehr_list.merge(ehr_cxr_merged_final[['time_series', 'period_length', 'dicom_id']], how='outer',
-                                on=['time_series', 'period_length'])
+                                on=['time_series', 'period_length']) # 不对啊，那他不会进行裁剪以扩增数据吗。
 
     # Merge Note data and icustay
     note_stay = icu_stay_metadata[['subject_id', 'hadm_id', 'stay_id']].merge(note, how='inner', on=['subject_id', 'hadm_id'])
-    all_merged = all_merged.merge(note_stay[['stay_id','past_medical_history']], how='left', on='stay_id')
+    all_merged = all_merged.merge(note_stay[['stay_id','past_medical_history']], how='left', on='stay_id') # 她对note根据id是选择直接concat。
 
     # Adjust column order
     df_id = all_merged.dicom_id
